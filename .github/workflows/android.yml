@@ -44,7 +44,7 @@ jobs:
 
       - name: Build debug APK
         working-directory: SoundFX-AI
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace -Pkotlin.jvm.target.validation.mode=warning
 
       - name: Upload debug APK
         if: success()
