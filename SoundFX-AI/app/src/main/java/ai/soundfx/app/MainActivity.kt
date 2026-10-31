@@ -18,7 +18,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -30,9 +29,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
-import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,10 +38,9 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 SoundFxScreen(
                     initialKey = prefs.getString("key", "") ?: "",
-                    initialSecret = prefs.getString("secret", "") ?: "",
-                    onSaveCredentials = { key, secret ->
+                    onSaveCredentials = { key ->
                         // Stored in this app's private preferences; not encrypted.
-                        prefs.edit().putString("key", key).putString("secret", secret).apply()
+                        prefs.edit().putString("key", key).apply()
                     }
                 )
             }
@@ -53,23 +48,15 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private class WiroClient(private val apiKey: String, private val apiSecret: String) {
+private class WiroClient(private val apiKey: String) {
     private val http = OkHttpClient.Builder()
         .callTimeout(90, TimeUnit.SECONDS)
         .build()
 
+    // API Key Only (Simple) auth, as used by the Aderno project:
+    // only the x-api-key header is sent, no nonce/signature and no secret.
     private fun headers(): Map<String, String> {
-        val nonce = Random.nextLong(1, Long.MAX_VALUE).toString()
-        val message = apiSecret + nonce
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(apiKey.toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        val signature = mac.doFinal(message.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
-        return mapOf(
-            "x-api-key" to apiKey,
-            "x-nonce" to nonce,
-            "x-signature" to signature
-        )
+        return mapOf("x-api-key" to apiKey)
     }
 
     suspend fun submit(prompt: String, duration: Int, loop: Boolean, influence: Double): Pair<String, String> =
@@ -82,15 +69,15 @@ private class WiroClient(private val apiKey: String, private val apiSecret: Stri
                 .put("promptInfluence", influence)
                 .toString()
 
-            // The published cURL example describes multipart/form-data while showing
-            // a JSON body. This mirrors that example; the documentation is ambiguous
-            // about the exact wire encoding, so this may need adjustment if Wiro rejects it.
-            val body = json.toRequestBody("multipart/form-data".toMediaType())
+            // Wiro docs: JSON (application/json) is the default for text inputs.
+            // Multipart is only for file inputs; a raw JSON body labelled
+            // multipart/form-data caused HTTP 400 "Parsing request error".
+            val body = json.toRequestBody("application/json".toMediaType())
             val builder = Request.Builder()
                 .url("https://api.wiro.ai/v1/Run/elevenlabs/sound-effects-v3")
                 .post(body)
             headers().forEach { (k, v) -> builder.addHeader(k, v) }
-            builder.addHeader("Content-Type", "multipart/form-data")
+            builder.addHeader("Content-Type", "application/json")
 
             http.newCall(builder.build()).execute().use { response ->
                 val text = response.body?.string().orEmpty()
@@ -106,12 +93,12 @@ private class WiroClient(private val apiKey: String, private val apiSecret: Stri
 
     suspend fun detail(taskToken: String): JSONObject = withContext(Dispatchers.IO) {
         val json = JSONObject().put("tasktoken", taskToken).toString()
-        val body = json.toRequestBody("multipart/form-data".toMediaType())
+        val body = json.toRequestBody("application/json".toMediaType())
         val builder = Request.Builder()
             .url("https://api.wiro.ai/v1/Task/Detail")
             .post(body)
         headers().forEach { (k, v) -> builder.addHeader(k, v) }
-        builder.addHeader("Content-Type", "multipart/form-data")
+        builder.addHeader("Content-Type", "application/json")
         http.newCall(builder.build()).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) error("HTTP ${response.code}: $text")
@@ -128,11 +115,9 @@ private class WiroClient(private val apiKey: String, private val apiSecret: Stri
 @Composable
 private fun SoundFxScreen(
     initialKey: String,
-    initialSecret: String,
-    onSaveCredentials: (String, String) -> Unit
+    onSaveCredentials: (String) -> Unit
 ) {
     var apiKey by remember { mutableStateOf(initialKey) }
-    var apiSecret by remember { mutableStateOf(initialSecret) }
     var prompt by remember { mutableStateOf("Heavy rain falling on a metal roof, with distant thunder") }
     var duration by remember { mutableFloatStateOf(10f) }
     var loop by remember { mutableStateOf(false) }
@@ -161,13 +146,8 @@ private fun SoundFxScreen(
                     label = { Text("Wiro API Key") }, modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
-                OutlinedTextField(
-                    value = apiSecret, onValueChange = { apiSecret = it },
-                    label = { Text("Wiro API Secret") }, modifier = Modifier.fillMaxWidth(),
-                    singleLine = true, visualTransformation = PasswordVisualTransformation()
-                )
                 Button(
-                    onClick = { onSaveCredentials(apiKey.trim(), apiSecret.trim()); status = "کلیدها در حافظه خصوصی برنامه ذخیره شدند" },
+                    onClick = { onSaveCredentials(apiKey.trim()); status = "کلید در حافظه خصوصی برنامه ذخیره شد" },
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("ذخیره تنظیمات API") }
 
@@ -185,14 +165,14 @@ private fun SoundFxScreen(
                 }
                 Text("Prompt Influence: 0.30 (مقدار پیش‌فرض مستندات)")
                 Button(
-                    enabled = !busy && prompt.isNotBlank() && apiKey.isNotBlank() && apiSecret.isNotBlank(),
+                    enabled = !busy && prompt.isNotBlank() && apiKey.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
                     onClick = {
                         scope.launch {
                             busy = true
                             outputUrl = ""
                             try {
-                                val client = WiroClient(apiKey.trim(), apiSecret.trim())
+                                val client = WiroClient(apiKey.trim())
                                 status = "در حال ارسال درخواست..."
                                 val (id, token) = client.submit(prompt.trim(), duration.toInt(), loop, influence.toDouble())
                                 taskId = id
@@ -248,8 +228,8 @@ private fun SoundFxScreen(
                     Text(outputUrl, style = MaterialTheme.typography.bodySmall)
                 }
                 Text(
-                    "نکته: مستندات Wiro در نمونه cURL درباره multipart/form-data و بدنه JSON ابهام دارد. " +
-                    "اتصال واقعی باید با حساب Wiro آزمایش شود. کلیدها در حافظه خصوصی برنامه ذخیره می‌شوند، اما در این نسخه رمزگذاری نشده‌اند.",
+                    "نکته: درخواست به Wiro با application/json و فقط با هدر x-api-key ارسال می‌شود (روش API Key Only). " +
+                    "کلید در حافظه خصوصی برنامه ذخیره می‌شود، اما در این نسخه رمزگذاری نشده است.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
