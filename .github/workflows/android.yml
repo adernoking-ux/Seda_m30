@@ -20,14 +20,18 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android SDK packages
         run: |
+          if [ -z "$ANDROID_HOME" ]; then
+            ANDROID_HOME="$ANDROID_SDK_ROOT"
+          fi
+          echo "ANDROID_HOME=$ANDROID_HOME"
           if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
             SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           else
+            SDKMANAGER=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n 1)
+          fi
+          if [ -z "$SDKMANAGER" ]; then
             SDKMANAGER="sdkmanager"
           fi
           yes | "$SDKMANAGER" --licenses || true
